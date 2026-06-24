@@ -243,8 +243,9 @@ PROOTSCRIPT
 DISTRO="debian"
 CWD="$(pwd)"
 
-# Build the inner command, escaping arguments for sh -c
-INNER='cd "$0" 2>/dev/null; shift; exec /usr/local/bin/copilot-cli "$@"'
+# $0 inside sh -c receives CWD; "$@" expands to the remaining args (the user's args).
+# No `shift` needed: positional params 1..N already exclude $0.
+INNER='cd "$0" 2>/dev/null; exec /usr/local/bin/copilot-cli "$@"'
 
 exec proot-distro login "$DISTRO" -- /bin/sh -c "$INNER" "$CWD" "$@"
 LAUNCHER
