@@ -149,15 +149,18 @@ install_via_proot() {
     pkg update -y || print_warning "pkg update had issues, continuing..."
     ensure_pkg proot-distro proot-distro
 
-    # Install the distro if not already present
-    if proot-distro list 2>/dev/null | grep -q "$PROOT_DISTRO"; then
-        print_info "$PROOT_DISTRO already installed"
+    # Install the distro if not already present.
+    # proot-distro installs rootfs to $PREFIX/var/lib/proot-distro/installed-rootfs/<distro>
+    PROOT_ROOTFS="$PREFIX/var/lib/proot-distro/installed-rootfs/$PROOT_DISTRO"
+    if [ -d "$PROOT_ROOTFS" ] && [ -x "$PROOT_ROOTFS/bin/sh" ]; then
+        print_info "$PROOT_DISTRO already installed (skipping)"
     else
         print_info "Installing $PROOT_DISTRO (this may take a few minutes)..."
         if proot-distro install "$PROOT_DISTRO"; then
             print_success "$PROOT_DISTRO installed"
         else
             print_error "Failed to install $PROOT_DISTRO"
+            print_info "If the container is in a broken state, run: proot-distro remove $PROOT_DISTRO"
             exit 1
         fi
     fi
