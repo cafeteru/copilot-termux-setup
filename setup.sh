@@ -122,8 +122,19 @@ fi
 
 print_step "Step 1/7: Installing system dependencies"
 
+# Clean up stale/broken repository entries from previous runs or bad configs
+SOURCES_LIST="$PREFIX/etc/apt/sources.list"
+if grep -q "grimler.se/termux-glibc" "$SOURCES_LIST" 2>/dev/null; then
+    print_info "Removing stale grimler.se glibc repo from sources.list..."
+    sed -i '/grimler\.se\/termux-glibc/d' "$SOURCES_LIST"
+fi
+
 print_info "Running pkg update..."
 pkg update -y || print_warning "pkg update had issues, continuing..."
+
+# Ensure termux-keyring is up to date (needed for glibc repo GPG key)
+print_info "Updating termux-keyring..."
+pkg install -y termux-keyring 2>/dev/null || print_warning "Could not update termux-keyring"
 
 ensure_pkg nodejs node
 ensure_pkg curl curl
@@ -137,16 +148,14 @@ pkg install -y glibc-repo 2>/dev/null || {
   print_warning "glibc-repo package not found, adding repository manually..."
   GLIBC_LIST="$PREFIX/etc/apt/sources.list.d/glibc.list"
   mkdir -p "$PREFIX/etc/apt/sources.list.d"
-  if [ ! -f "$GLIBC_LIST" ] || ! grep -q "termux-glibc" "$GLIBC_LIST" 2>/dev/null; then
-    cat > "$GLIBC_LIST" << 'REPO'
-# The glibc termux repository, with cloudflare cache
-deb https://packages-cf.termux.dev/apt/termux-glibc/ glibc stable
+
+  # Use [trusted=yes] to bypass GPG issues when keyring doesn't have the key
+  cat > "$GLIBC_LIST" << 'REPO'
+# The glibc termux repository (cloudflare cache)
+deb [trusted=yes] https://packages-cf.termux.dev/apt/termux-glibc/ glibc stable
 REPO
-    print_info "Repository added to $GLIBC_LIST"
-    pkg update -y || true
-  else
-    print_info "glibc repository already configured"
-  fi
+  print_info "Repository added to $GLIBC_LIST"
+  pkg update -y || true
 }
 
 print_info "Installing glibc-runner..."

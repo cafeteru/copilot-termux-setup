@@ -27,8 +27,7 @@ Based on the workaround from [github/copilot-cli#3333](https://github.com/github
 ```bash
 git clone https://github.com/YOUR_USER/copilot-termux-setup.git
 cd copilot-termux-setup
-chmod +x setup.sh
-./setup.sh
+bash setup.sh
 ```
 
 ## Configuration
