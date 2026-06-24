@@ -1,5 +1,14 @@
 #!/bin/bash
 
+# GitHub Copilot CLI Setup for Termux (Android)
+#
+# Since v1.0.48, Copilot CLI ships a Rust addon (runtime.node) compiled against
+# glibc, which is incompatible with Android's Bionic libc. This script works
+# around the issue by using Termux's glibc-runner package to execute a standard
+# linux-arm64 Node.js binary under the glibc dynamic linker.
+#
+# Based on: https://github.com/github/copilot-cli/issues/3333
+
 # Ensure running under Termux
 if [ -z "${TERMUX_VERSION:-}" ]; then
   echo "Error: This setup script must be run inside Termux (TERMUX_VERSION not set). Exiting." >&2
@@ -9,33 +18,18 @@ fi
 set -e  # Exit on error
 set -u  # Exit on undefined variable
 
-# Detect architecture for Android platform string
+# Only aarch64 is supported (vast majority of modern Android devices)
 ARCH=$(uname -m)
-case "$ARCH" in
-  aarch64|arm64)
-    ANDROID_ARCH="android-arm64"
-    ;;
-  x86_64|amd64)
-    ANDROID_ARCH="android-x64"
-    ;;
-  i686|i386)
-    ANDROID_ARCH="android-ia32"
-    ;;
-  armv7l|armv8l)
-    ANDROID_ARCH="android-arm"
-    ;;
-  *)
-    echo "Warning: Unknown architecture $ARCH, defaulting to android-arm64" >&2
-    ANDROID_ARCH="android-arm64"
-    ;;
-esac
-
-# Install root: allow override with first argument, otherwise derive from npm global root
-if [ "${1:-}" != "" ]; then
-  INSTALL_ROOT="$1"
-else
-  INSTALL_ROOT="${PREFIX}/lib/node_modules/@github/copilot"
+if [ "$ARCH" != "aarch64" ] && [ "$ARCH" != "arm64" ]; then
+  echo "Error: Only aarch64/arm64 is supported. Detected: $ARCH" >&2
+  exit 1
 fi
+
+# Configuration
+NODE_VERSION="${NODE_VERSION:-v22.16.0}"
+NODE_DIR="$HOME/node-linux"
+GLIBC_PREFIX="/data/data/com.termux/files/usr/glibc"
+COPILOT_DIR="${PREFIX}/lib/node_modules/@github/copilot"
 
 # Color codes for output
 RED='\033[0;31m'
@@ -44,15 +38,10 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Module status tracking
-MODULES_FIXED=0
-MODULES_FAILED=0
-
 ################################################################################
 # HELPER FUNCTIONS
 ################################################################################
 
-# Print colored status messages
 print_header() {
     echo ""
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
@@ -67,7 +56,6 @@ print_info() {
 
 print_success() {
     echo -e "${GREEN}✓${NC} $1"
-    MODULES_FIXED=$((MODULES_FIXED+1))
 }
 
 print_warning() {
@@ -76,7 +64,6 @@ print_warning() {
 
 print_error() {
     echo -e "${RED}✗${NC} $1"
-    MODULES_FAILED=$((MODULES_FAILED+1))
 }
 
 print_step() {
@@ -85,24 +72,18 @@ print_step() {
     echo ""
 }
 
-# Ensure a pkg package is installed only if missing; can check by command or pkg list-installed
 ensure_pkg() {
   local pkgname="$1"
   local check_cmd="${2:-}"
 
   if [ -n "$check_cmd" ]; then
     if command -v "$check_cmd" >/dev/null 2>&1; then
-      print_info "$pkgname (command $check_cmd) already available at $(command -v $check_cmd)"
-      return 0
-    fi
-  else
-    if pkg list-installed "$pkgname" >/dev/null 2>&1; then
-      print_info "$pkgname already installed according to pkg"
+      print_info "$pkgname already available"
       return 0
     fi
   fi
 
-  print_info "Installing $pkgname"
+  print_info "Installing $pkgname..."
   if pkg install -y "$pkgname"; then
     print_success "$pkgname installed"
   else
@@ -117,14 +98,18 @@ ensure_pkg() {
 
 print_header "GitHub Copilot CLI on Termux"
 
-echo "This script will install Github Copilot CLI and 4 native modules:"
+echo "This script will set up GitHub Copilot CLI on Termux using the"
+echo "glibc compatibility layer (no proot required)."
 echo ""
-echo "  1. node-pty     - Pseudo-terminal for command execution"
-echo "  2. sharp        - Image processing library"
-echo "  3. keytar       - Secure credential storage"
-echo "  4. clipboard    - System clipboard access (Termux API wrapper)"
+echo "What it does:"
+echo "  1. Installs Node.js, glibc-repo, and glibc-runner"
+echo "  2. Downloads official linux-arm64 Node.js binary"
+echo "  3. Installs @github/copilot via npm"
+echo "  4. Creates wrapper scripts to run Copilot through glibc"
+echo "  5. Patches hardcoded /bin/bash paths for Termux"
 echo ""
-echo "Termux ${TERMUX_VERSION:-unknown} ($ANDROID_ARCH)"
+echo "Termux ${TERMUX_VERSION:-unknown} (aarch64)"
+echo "Node.js target: $NODE_VERSION"
 echo ""
 
 if [ -t 0 ]; then
@@ -132,523 +117,250 @@ if [ -t 0 ]; then
 fi
 
 ################################################################################
-# STEP 0: Update package repositories and install Node.js
+# STEP 1: Update packages and install dependencies
 ################################################################################
 
-print_header "Updating Termux packages and installing Node.js"
+print_step "Step 1/7: Installing system dependencies"
 
-print_info "Running pkg update"
-pkg update -y || print_warning "pkg update failed, continuing anyway"
+print_info "Running pkg update..."
+pkg update -y || print_warning "pkg update had issues, continuing..."
 
-print_info "Installing core build dependencies"
 ensure_pkg nodejs node
-ensure_pkg clang clang
-ensure_pkg make make
-ensure_pkg python python
-
-# Create .gyp configuration for node-gyp (fixes android ndk path issues)
-# Non-destructive: only create if missing
-GYP_FILE="$HOME/.gyp/include.gypi"
-if [ ! -f "$GYP_FILE" ]; then
-    print_info "Creating ~/.gyp/include.gypi for node-gyp compatibility"
-    mkdir -p ~/.gyp
-    echo "{'variables':{'android_ndk_path':''}}" > "$GYP_FILE"
-    print_info "Created gyp configuration"
-else
-    print_info "~/.gyp/include.gypi already exists, skipping"
-fi
-
-################################################################################
-# STEP 1: Ensure GitHub Copilot CLI installed globally
-################################################################################
-
-print_step "Step 1/10: Installing GitHub Copilot CLI globally"
-
-print_info "Running npm install -g @github/copilot to ensure CLI is present"
-if npm install -g @github/copilot; then
-    print_info "GitHub Copilot CLI installed globally"
-else
-    print_error "Failed to install GitHub Copilot CLI globally"
-    exit 1
-fi
-
-if [ ! -d "$INSTALL_ROOT" ]; then
-    print_error "Install root not found at $INSTALL_ROOT after global install"
-    exit 1
-fi
-
-cd "$INSTALL_ROOT"
-
-print_step "Step 2/10: Installing system dependencies"
-
-ensure_pkg glib
-ensure_pkg xorgproto
-ensure_pkg rust rustc
-ensure_pkg libvips
-ensure_pkg pkg-config pkg-config
+ensure_pkg curl curl
+ensure_pkg tar tar
 ensure_pkg ripgrep rg
 
-print_success "System dependencies installed successfully"
+# Install glibc compatibility packages
+print_info "Adding glibc repository..."
+pkg install -y glibc-repo 2>/dev/null || {
+  # If glibc-repo isn't available as a package, try adding the repo manually
+  print_warning "glibc-repo package not found, trying manual repo setup..."
+  if ! grep -q "glibc" "$PREFIX/etc/apt/sources.list" 2>/dev/null; then
+    echo "deb https://grimler.se/termux-glibc-packages-24 stable main" >> "$PREFIX/etc/apt/sources.list"
+    pkg update -y || true
+  fi
+}
 
-# Ensure packaged ripgrep is available system-wide if no system 'rg' exists.
-# Idempotent: only creates a symlink when needed and won't overwrite existing files.
-RIPGREP_SRC="$(find "$INSTALL_ROOT/ripgrep" -type f -name 'rg' -perm /111 2>/dev/null | head -n1 || true)"
-if [ -z "$RIPGREP_SRC" ]; then
-    print_warning "No packaged ripgrep binary found; skipping rg symlink"
+print_info "Installing glibc-runner..."
+if pkg install -y glibc-runner; then
+    print_success "glibc-runner installed"
 else
-    # Use PREFIX for proper Termux bin directory, fallback to hardcoded path
-    TARGET_RG="${PREFIX:-/data/data/com.termux/files/usr}/bin/rg"
-    if command -v rg >/dev/null 2>&1; then
-        print_info "System 'rg' already available at $(command -v rg); leaving system ripgrep intact"
-    else
-        mkdir -p "$(dirname "$TARGET_RG")"
-        if [ -L "$TARGET_RG" ]; then
-            if [ "$(readlink -f "$TARGET_RG")" = "$RIPGREP_SRC" ]; then
-                print_info "rg symlink already points to packaged ripgrep"
-            else
-                print_warning "rg symlink exists and points elsewhere; skipping to avoid overwrite"
-            fi
-        elif [ -e "$TARGET_RG" ]; then
-            print_warning "An executable named 'rg' exists at $TARGET_RG; skipping symlink"
-        else
-            ln -sf "$RIPGREP_SRC" "$TARGET_RG" && print_success "Linked packaged ripgrep to $TARGET_RG"
-        fi
-    fi
+    print_error "Failed to install glibc-runner. This is required."
+    echo "Try: pkg install glibc-repo && pkg install glibc-runner" >&2
+    exit 1
 fi
 
-# Link system ripgrep to the Copilot expected path
-COPILOT_RG_DIR="$INSTALL_ROOT/ripgrep/bin/$ANDROID_ARCH"
-COPILOT_RG_PATH="$COPILOT_RG_DIR/rg"
-SYSTEM_RG="$(command -v rg 2>/dev/null || true)"
-
-if [ -n "$SYSTEM_RG" ]; then
-    mkdir -p "$COPILOT_RG_DIR"
-    if [ ! -e "$COPILOT_RG_PATH" ]; then
-        ln -sf "$SYSTEM_RG" "$COPILOT_RG_PATH" && print_success "Linked system rg to Copilot expected path"
-    elif [ -L "$COPILOT_RG_PATH" ] && [ "$(readlink -f "$COPILOT_RG_PATH")" = "$SYSTEM_RG" ]; then
-        print_info "Copilot rg symlink already correct"
-    else
-        print_warning "Copilot rg path exists; skipping"
-    fi
-else
-    print_warning "No system rg found; Copilot may fail to use ripgrep"
+# Verify glibc dynamic linker exists
+LD_SO="$GLIBC_PREFIX/lib/ld-linux-aarch64.so.1"
+if [ ! -f "$LD_SO" ]; then
+    print_error "glibc dynamic linker not found at $LD_SO"
+    echo "Ensure glibc-runner is properly installed." >&2
+    exit 1
 fi
+print_success "glibc dynamic linker found"
 
-print_step "Step 3/10: Installing node-pty"
+################################################################################
+# STEP 2: Download linux-arm64 Node.js binary
+################################################################################
 
-if npm install node-pty; then
-    print_success "node-pty installed successfully"
-    
-    # Verify the build
-    if [ -f "node_modules/node-pty/build/Release/pty.node" ]; then
-        print_success "pty.node binary found"
+print_step "Step 2/7: Downloading linux-arm64 Node.js $NODE_VERSION"
+
+NODE_INSTALL_DIR="$NODE_DIR/$NODE_VERSION"
+
+if [ -f "$NODE_INSTALL_DIR/bin/node" ]; then
+    print_info "Node.js $NODE_VERSION already downloaded, skipping"
+else
+    mkdir -p "$NODE_DIR"
+    NODE_URL="https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-arm64.tar.xz"
+    print_info "Downloading from $NODE_URL ..."
+
+    TMP_TARBALL="$(mktemp)"
+    if curl -fSL "$NODE_URL" -o "$TMP_TARBALL"; then
+        tar xJf "$TMP_TARBALL" -C "$NODE_DIR/"
+        mv "$NODE_DIR/node-${NODE_VERSION}-linux-arm64" "$NODE_INSTALL_DIR"
+        rm -f "$TMP_TARBALL"
+        print_success "Node.js $NODE_VERSION downloaded"
     else
-        print_error "pty.node binary not found after installation"
+        rm -f "$TMP_TARBALL"
+        print_error "Failed to download Node.js $NODE_VERSION"
         exit 1
     fi
+fi
+
+# Verify the binary runs under glibc
+if "$LD_SO" "$NODE_INSTALL_DIR/bin/node" -e "console.log('ok')" 2>/dev/null | grep -q "ok"; then
+    print_success "Node.js binary works under glibc"
 else
-    print_error "Failed to install node-pty"
+    print_error "Node.js binary failed to run under glibc dynamic linker"
     exit 1
 fi
 
-print_step "Step 4/10: Installing node-addon-api and keytar"
+################################################################################
+# STEP 3: Install @github/copilot via npm
+################################################################################
 
-npm install node-addon-api@latest --save-dev
-if npm install keytar --ignore-scripts; then
-    print_success "keytar package downloaded"
+print_step "Step 3/7: Installing @github/copilot globally via npm"
+
+if npm install -g @github/copilot; then
+    print_success "@github/copilot installed"
 else
-    print_error "Failed to install keytar package"
+    print_error "Failed to install @github/copilot"
     exit 1
 fi
 
+# Verify install path
+if [ ! -d "$COPILOT_DIR" ]; then
+    # Try to find it
+    COPILOT_DIR="$(npm root -g)/@github/copilot"
+    if [ ! -d "$COPILOT_DIR" ]; then
+        print_error "Cannot find Copilot install directory"
+        exit 1
+    fi
+fi
 
-print_step "Step 5/10: Patching node-addon-api enum handling"
-find node_modules -name "napi.h" | while read -r NAPI_HEADER; do
-    if grep -q "static_cast<napi_typedarray_type>(-1)" "$NAPI_HEADER"; then
-        cp "$NAPI_HEADER" "$NAPI_HEADER.backup"
-        if sed -i 's/static_cast<napi_typedarray_type>(-1)/napi_uint8_array/' "$NAPI_HEADER"; then
-            print_success "Patched $NAPI_HEADER"
+print_info "Copilot installed at: $COPILOT_DIR"
+
+################################################################################
+# STEP 4: Create node-wrapper (fixes child_process.fork)
+################################################################################
+
+print_step "Step 4/7: Creating node-wrapper script"
+
+# When node runs under ld.so, process.execPath points to ld-linux-aarch64.so.1
+# instead of node. This breaks child_process.fork() in interactive mode.
+cat > "$NODE_INSTALL_DIR/bin/node-wrapper" << EOF
+#!/data/data/com.termux/files/usr/bin/bash
+GLIBC_PREFIX="$GLIBC_PREFIX"
+REAL_NODE="\$(dirname "\$0")/node"
+LD_SO="\$GLIBC_PREFIX/lib/ld-linux-aarch64.so.1"
+export PATH="\$GLIBC_PREFIX/bin:\$PATH"
+unset LD_PRELOAD
+exec "\$LD_SO" "\$REAL_NODE" "\$@"
+EOF
+chmod +x "$NODE_INSTALL_DIR/bin/node-wrapper"
+print_success "node-wrapper created"
+
+################################################################################
+# STEP 5: Create preload script (fixes process.execPath)
+################################################################################
+
+print_step "Step 5/7: Creating preload script"
+
+cat > "$NODE_INSTALL_DIR/copilot-preload.js" << 'EOF'
+const path = require('path');
+const wrapperPath = path.join(__dirname, 'bin', 'node-wrapper');
+Object.defineProperty(process, 'execPath', {
+  value: wrapperPath,
+  writable: true,
+  configurable: true
+});
+if (process.argv[0] && process.argv[0].includes('ld-linux-aarch64')) {
+  process.argv[0] = wrapperPath;
+}
+EOF
+print_success "copilot-preload.js created"
+
+################################################################################
+# STEP 6: Create copilot launcher wrapper
+################################################################################
+
+print_step "Step 6/7: Creating copilot launcher"
+
+# Remove any existing copilot binary/symlink from npm
+rm -f "$PREFIX/bin/copilot"
+
+cat > "$PREFIX/bin/copilot" << EOF
+#!/data/data/com.termux/files/usr/bin/bash
+# GitHub Copilot CLI launcher for Termux (glibc wrapper)
+# Generated by copilot-termux-setup
+
+export SSL_CERT_FILE="/data/data/com.termux/files/usr/etc/tls/cert.pem"
+export SSL_CERT_DIR="/data/data/com.termux/files/usr/etc/tls/certs"
+export NODE_EXTRA_CA_CERTS="/data/data/com.termux/files/usr/etc/tls/cert.pem"
+export NODE_OPTIONS="--no-warnings"
+
+GLIBC_PREFIX="$GLIBC_PREFIX"
+NODE_LINUX_DIR="$NODE_INSTALL_DIR"
+LINUX_NODE="\$NODE_LINUX_DIR/bin/node"
+PRELOAD="\$NODE_LINUX_DIR/copilot-preload.js"
+COPILOT="$COPILOT_DIR/npm-loader.js"
+
+LD_SO="\$GLIBC_PREFIX/lib/ld-linux-aarch64.so.1"
+export PATH="\$GLIBC_PREFIX/bin:\$PATH"
+unset LD_PRELOAD
+
+exec "\$LD_SO" "\$LINUX_NODE" -r "\$PRELOAD" "\$COPILOT" "\$@"
+EOF
+chmod +x "$PREFIX/bin/copilot"
+print_success "copilot launcher created at $PREFIX/bin/copilot"
+
+################################################################################
+# STEP 7: Patch hardcoded /bin/bash paths
+################################################################################
+
+print_step "Step 7/7: Patching hardcoded shell paths for Termux"
+
+# The CLI hardcodes /bin/bash which doesn't exist on Termux.
+# Bash is at $PREFIX/bin/bash. Patch to use $SHELL with fallback.
+PATCHED=0
+for JS_FILE in "$COPILOT_DIR/app.js" "$COPILOT_DIR/sdk/index.js"; do
+    if [ -f "$JS_FILE" ]; then
+        if grep -q '"/bin/bash"' "$JS_FILE"; then
+            sed -i 's|"/bin/bash"|process.env.SHELL\|\|"/bin/bash"|g' "$JS_FILE"
+            print_success "Patched $(basename "$JS_FILE")"
+            PATCHED=$((PATCHED+1))
         else
-            print_error "Failed to patch $NAPI_HEADER"
+            print_info "$(basename "$JS_FILE") already patched or no hardcoded bash path"
         fi
     fi
 done
 
-print_step "Step 6/10: Installing sharp"
-if npm install sharp; then
-    print_success "sharp installed and compiled successfully"
-else
-    print_error "Failed to install sharp"
-    print_warning "Copilot CLI will work but without image processing features"
-fi
-
-print_step "Step 7/10: Building keytar with patched dependencies"
-
-cd node_modules/keytar
-
-if npm run build; then
-    print_success "keytar compiled successfully"
-else
-    print_error "Failed to compile keytar"
-    cd ../..
-    exit 1
-fi
-
-cd ../..
-
-print_step "Step 8/10: Installing termux-api for clipboard support"
-ensure_pkg termux-api termux-clipboard-get
-
-print_step "Step 9/10: Setting up clipboard (Termux API wrapper)"
-if [ ! -f "clipboard/index.cjs" ] || [ ! -f "clipboard/android-impl.cjs" ]; then
-    mkdir -p clipboard
-    if [ ! -f "clipboard/index.cjs" ]; then
-        cat > clipboard/index.cjs <<'IDX'
-const os = require('os');
-
-if (os.platform() === 'android' || process.env.PREFIX?.includes('com.termux')) {
-  module.exports = require('./android-impl.cjs');
-} else {
-  try {
-    module.exports = require('../@teddyzhu/clipboard');
-  } catch (e) {
-    console.error('Native clipboard module not available, falling back to Android implementation');
-    module.exports = require('./android-impl.cjs');
-  }
-}
-IDX
-    fi
-    if [ ! -f "clipboard/android-impl.cjs" ]; then
-        cat > clipboard/android-impl.cjs <<'AIDX'
-const { execSync, exec } = require('child_process');
-const { promisify } = require('util');
-const execAsync = promisify(exec);
-
-class ClipboardManager {
-  constructor() {
-    try {
-      execSync('which termux-clipboard-get', { stdio: 'ignore' });
-      execSync('which termux-clipboard-set', { stdio: 'ignore' });
-    } catch (e) {
-      throw new Error('Termux API not installed. Run: pkg install termux-api');
-    }
-  }
-
-  getText() {
-    try {
-      return execSync('termux-clipboard-get').toString();
-    } catch (e) {
-      throw new Error(`Failed to get text: ${e.message}`);
-    }
-  }
-
-  setText(text) {
-    try {
-      execSync(`termux-clipboard-set`, { input: text });
-    } catch (e) {
-      throw new Error(`Failed to set text: ${e.message}`);
-    }
-  }
-
-  async getTextAsync() {
-    try {
-      const { stdout } = await execAsync('termux-clipboard-get');
-      return stdout;
-    } catch (e) {
-      throw new Error(`Failed to get text: ${e.message}`);
-    }
-  }
-
-  async setTextAsync(text) {
-    try {
-      await execAsync('termux-clipboard-set', { input: text });
-    } catch (e) {
-      throw new Error(`Failed to set text: ${e.message}`);
-    }
-  }
-
-  getHtml() {
-    throw new Error('HTML clipboard not supported on Android/Termux');
-  }
-
-  setHtml() {
-    throw new Error('HTML clipboard not supported on Android/Termux');
-  }
-
-  getRichText() {
-    throw new Error('Rich text clipboard not supported on Android/Termux');
-  }
-
-  setRichText() {
-    throw new Error('Rich text clipboard not supported on Android/Termux');
-  }
-
-  getImageBase64() {
-    throw new Error('Image clipboard not supported on Android/Termux');
-  }
-
-  getImageData() {
-    throw new Error('Image clipboard not supported on Android/Termux');
-  }
-
-  setImageBase64() {
-    throw new Error('Image clipboard not supported on Android/Termux');
-  }
-
-  setImageRaw() {
-    throw new Error('Image clipboard not supported on Android/Termux');
-  }
-
-  getImageRaw() {
-    throw new Error('Image clipboard not supported on Android/Termux');
-  }
-
-  getFiles() {
-    throw new Error('Files clipboard not supported on Android/Termux');
-  }
-
-  setFiles() {
-    throw new Error('Files clipboard not supported on Android/Termux');
-  }
-
-  setBuffer() {
-    throw new Error('Custom buffer clipboard not supported on Android/Termux');
-  }
-
-  getBuffer() {
-    throw new Error('Custom buffer clipboard not supported on Android/Termux');
-  }
-
-  setContents(contents) {
-    if (contents.text) {
-      return this.setText(contents.text);
-    }
-    throw new Error('Only text content is supported on Android/Termux');
-  }
-
-  hasFormat(format) {
-    return format === 'text';
-  }
-
-  getAvailableFormats() {
-    return ['text'];
-  }
-
-  clear() {
-    try {
-      execSync('termux-clipboard-set', { input: '' });
-    } catch (e) {
-      throw new Error(`Failed to clear clipboard: ${e.message}`);
-    }
-  }
-}
-
-class ClipboardListener {
-  constructor() {
-    this.watchProcess = null;
-    this.lastContent = '';
-    this.callbacks = [];
-  }
-
-  watch(callback) {
-    if (this.watchProcess) {
-      this.stop();
-    }
-
-    this.callbacks.push(callback);
-    
-    this.lastContent = '';
-    try {
-      this.lastContent = execSync('termux-clipboard-get').toString();
-    } catch (e) {
-      // Ignore initial read errors
-    }
-
-    this.watchProcess = setInterval(() => {
-      try {
-        const currentContent = execSync('termux-clipboard-get').toString();
-        if (currentContent !== this.lastContent) {
-          this.lastContent = currentContent;
-          const clipboardData = {
-            availableFormats: ['text'],
-            text: currentContent,
-            rtf: null,
-            html: null,
-            image: null,
-            files: null,
-            files: null
-          };
-          this.callbacks.forEach(cb => {
-            try {
-              cb(clipboardData);
-            } catch (e) {
-              console.error('Clipboard callback error:', e);
-            }
-          });
-        }
-      } catch (e) {
-        // Ignore polling errors
-      }
-    }, 500);
-  }
-
-  stop() {
-    if (this.watchProcess) {
-      clearInterval(this.watchProcess);
-      this.watchProcess = null;
-    }
-    this.callbacks = [];
-  }
-
-  isWatching() {
-    return this.watchProcess !== null;
-  }
-
-  getListenerType() {
-    return 'android-termux-api';
-  }
-}
-
-function getClipboardText() {
-  try {
-    return execSync('termux-clipboard-get').toString();
-  } catch (e) {
-    throw new Error(`Failed to get text: ${e.message}`);
-  }
-}
-
-function setClipboardText(text) {
-  try {
-    execSync('termux-clipboard-set', { input: text });
-  } catch (e) {
-    throw new Error(`Failed to set text: ${e.message}`);
-  }
-}
-
-function clearClipboard() {
-  try {
-    execSync('termux-clipboard-set', { input: '' });
-  } catch (e) {
-    throw new Error(`Failed to clear clipboard: ${e.message}`);
-  }
-}
-
-function isWaylandClipboardAvailable() {
-  return false;
-}
-
-module.exports = {
-  ClipboardManager,
-  ClipboardListener,
-  getClipboardText,
-  setClipboardText,
-  clearClipboard,
-  isWaylandClipboardAvailable
-};
-AIDX
+# Also symlink ripgrep to Copilot's expected path if needed
+SYSTEM_RG="$(command -v rg 2>/dev/null || true)"
+if [ -n "$SYSTEM_RG" ]; then
+    COPILOT_RG_DIR="$COPILOT_DIR/ripgrep/bin/linux-arm64"
+    if [ ! -e "$COPILOT_RG_DIR/rg" ]; then
+        mkdir -p "$COPILOT_RG_DIR"
+        ln -sf "$SYSTEM_RG" "$COPILOT_RG_DIR/rg"
+        print_success "Linked system rg to Copilot expected path"
+    else
+        print_info "Copilot ripgrep path already configured"
     fi
 fi
 
-npm install @teddyzhu/clipboard --ignore-scripts 2>/dev/null || true
-[ -f "clipboard/index.cjs" ] && print_success "Clipboard wrapper installed" || print_warning "Clipboard wrapper not found"
+################################################################################
+# VERIFICATION
+################################################################################
 
-print_step "Step 10/11: Symlinking compiled binaries to prebuilds directory"
+print_header "Verifying Installation"
 
-mkdir -p "prebuilds/$ANDROID_ARCH"
-KEYTAR_PATH="$INSTALL_ROOT/node_modules/keytar/build/Release/keytar.node"
-PTY_PATH="$INSTALL_ROOT/node_modules/node-pty/build/Release/pty.node"
+# Test that copilot --version works
+if COPILOT_VERSION=$(copilot --version 2>/dev/null); then
+    print_success "copilot --version: $COPILOT_VERSION"
+else
+    print_warning "copilot --version failed (may still work in interactive mode)"
+    print_info "Try running: copilot --help"
+fi
 
-[ -f "$KEYTAR_PATH" ] && ln -sf "$KEYTAR_PATH" "prebuilds/$ANDROID_ARCH/keytar.node" && print_success "keytar.node symlinked" || { print_error "keytar.node not found"; exit 1; }
-[ -f "$PTY_PATH" ] && ln -sf "$PTY_PATH" "prebuilds/$ANDROID_ARCH/pty.node" && print_success "pty.node symlinked" || { print_error "pty.node not found"; exit 1; }
-
-print_step "Step 11/11: Verifying installation"
-
-cat > test-native-modules-install.mjs << 'TESTEOF'
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-
-let passed = 0;
-let failed = 0;
-
-console.log("\nTesting native modules...\n");
-
-// Test keytar
-try {
-  const keytar = require('keytar');
-  console.log("✓ keytar loaded successfully");
-  passed++;
-} catch (e) {
-  console.log("✗ keytar failed:", e.message);
-  failed++;
-}
-
-// Test node-pty
-try {
-  const pty = require('node-pty');
-  console.log("✓ node-pty loaded successfully");
-  passed++;
-} catch (e) {
-  console.log("✗ node-pty failed:", e.message);
-  failed++;
-}
-
-// Test sharp
-try {
-  const sharp = require('sharp');
-  console.log("✓ sharp loaded successfully");
-  passed++;
-} catch (e) {
-  console.log("✗ sharp failed:", e.message);
-  failed++;
-}
-
-// Test clipboard (check if wrapper exists)
-try {
-  const fs = require('fs');
-  if (fs.existsSync('./clipboard/index.cjs')) {
-    console.log("✓ clipboard wrapper available");
-    passed++;
-  } else {
-    console.log("⚠ clipboard wrapper not found");
-    failed++;
-  }
-} catch (e) {
-  console.log("✗ clipboard check failed:", e.message);
-  failed++;
-}
-
-console.log(`\nResults: ${passed} passed, ${failed} failed\n`);
-process.exit(failed > 0 ? 1 : 0);
-TESTEOF
-
-node test-native-modules-install.mjs && print_success "All module tests passed!" || print_warning "Some modules failed to load"
-rm -f test-native-modules-install.mjs
-
-print_header "Installation Summary"
-
-echo "Installed Packages:"
-echo "  • nodejs, clang, make, python"
-echo "  • glib, xorgproto, rust, libvips, pkg-config"
-echo "  • ripgrep, termux-api"
-echo ""
-echo "Native Modules Built:"
-echo "  • keytar (credential storage)"
-echo "  • node-pty (terminal/command execution)"
-echo "  • sharp (image processing)"
-echo "  • clipboard wrapper (Termux API integration)"
-echo ""
-echo "Modified Files:"
-echo "  • ~/.gyp/include.gypi (node-gyp config)"
-echo "  • Patched node-addon-api enum handling"
-echo "  • Created clipboard/index.cjs and clipboard/android-impl.cjs"
-echo "  • Symlinked prebuilds/$ANDROID_ARCH/keytar.node"
-echo "  • Symlinked prebuilds/$ANDROID_ARCH/pty.node"
-echo "  • Symlinked ripgrep to Copilot expected path"
-echo ""
+################################################################################
+# SUMMARY
+################################################################################
 
 print_header "Installation Complete!"
 
-echo "GitHub Copilot CLI is ready on Android/Termux ($ANDROID_ARCH)"
+echo "Components installed:"
+echo "  • Node.js $NODE_VERSION (linux-arm64) at $NODE_INSTALL_DIR"
+echo "  • glibc-runner (dynamic linker at $LD_SO)"
+echo "  • @github/copilot at $COPILOT_DIR"
+echo "  • Launcher wrapper at $PREFIX/bin/copilot"
+echo ""
+echo "Files created:"
+echo "  • $NODE_INSTALL_DIR/bin/node-wrapper"
+echo "  • $NODE_INSTALL_DIR/copilot-preload.js"
+echo "  • $PREFIX/bin/copilot"
+echo ""
+echo -e "${YELLOW}NOTE:${NC} After updating Copilot (npm update -g @github/copilot),"
+echo "      re-run this script to recreate the wrapper and patches."
 echo ""
 echo "Next steps:"
 echo "  1. Launch Copilot: copilot"
