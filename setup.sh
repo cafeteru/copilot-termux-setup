@@ -150,9 +150,8 @@ install_via_proot() {
     ensure_pkg proot-distro proot-distro
 
     # Install the distro if not already present.
-    # proot-distro installs rootfs to $PREFIX/var/lib/proot-distro/installed-rootfs/<distro>
-    PROOT_ROOTFS="$PREFIX/var/lib/proot-distro/installed-rootfs/$PROOT_DISTRO"
-    if [ -d "$PROOT_ROOTFS" ] && [ -x "$PROOT_ROOTFS/bin/sh" ]; then
+    # Most robust check: actually try to login with a no-op command.
+    if proot-distro login "$PROOT_DISTRO" -- /bin/true >/dev/null 2>&1; then
         print_info "$PROOT_DISTRO already installed (skipping)"
     else
         print_info "Installing $PROOT_DISTRO (this may take a few minutes)..."
@@ -196,12 +195,33 @@ fi
 echo "==> Node.js $(node --version) installed"
 
 # Install Copilot CLI
+# Use --include=optional to ensure the platform-specific binary package
+# (e.g. @github/copilot-linux-arm64) is installed. Some npm configs disable
+# optional deps, which leaves the CLI without its native binary.
 echo "==> Installing @github/copilot..."
-npm install -g @github/copilot
+npm install -g --include=optional @github/copilot
+
+# Verify the platform package was actually installed. If not, install it
+# explicitly. Map uname -m to the package suffix used by @github/copilot.
+ARCH="$(uname -m)"
+case "$ARCH" in
+    x86_64|amd64)   PLATFORM_PKG="@github/copilot-linux-x64" ;;
+    aarch64|arm64)  PLATFORM_PKG="@github/copilot-linux-arm64" ;;
+    *) PLATFORM_PKG="" ;;
+esac
+
+NPM_ROOT="$(npm root -g)"
+if [ -n "$PLATFORM_PKG" ] && [ ! -d "$NPM_ROOT/$PLATFORM_PKG" ]; then
+    echo "==> Platform package $PLATFORM_PKG missing, installing explicitly..."
+    npm install -g --force "$PLATFORM_PKG" || {
+        echo "ERROR: Could not install platform package $PLATFORM_PKG"
+        exit 1
+    }
+fi
 
 # Always create our own wrapper at a known absolute path to avoid PATH conflicts
 # with Termux's launcher (which is visible inside proot via filesystem mount)
-COPILOT_LOADER="$(npm root -g)/@github/copilot/npm-loader.js"
+COPILOT_LOADER="$NPM_ROOT/@github/copilot/npm-loader.js"
 if [ ! -f "$COPILOT_LOADER" ]; then
     echo "ERROR: Copilot CLI not found after install at $COPILOT_LOADER"
     exit 1
@@ -436,7 +456,7 @@ REPO
 
     print_step "Step 3/7: Installing @github/copilot globally via npm"
 
-    if npm install -g @github/copilot; then
+    if npm install -g --include=optional @github/copilot; then
         print_success "@github/copilot installed"
     else
         print_error "Failed to install @github/copilot"
