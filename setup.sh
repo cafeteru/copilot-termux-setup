@@ -176,6 +176,12 @@ install_via_proot() {
 #!/bin/sh
 set -e
 
+# proot-distro leaks Termux's $PATH into the container, which exposes Termux's
+# `node` (built for Android — process.platform === "android"). @github/copilot
+# then looks for an "@github/copilot-android-*" package that does not exist.
+# Force a clean Debian PATH so we always use the apt-installed Node at /usr/bin/node.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 # Make all apt operations non-interactive
 export DEBIAN_FRONTEND=noninteractive
 
@@ -185,21 +191,31 @@ apt-get update -qq
 echo "==> Installing dependencies..."
 apt-get install -y -qq --no-install-recommends curl ca-certificates git bash 2>&1 | tail -5
 
-# Install Node.js via official script if not present
-if ! command -v node >/dev/null 2>&1; then
-    echo "==> Installing Node.js..."
+# Install Node.js from NodeSource if Debian's /usr/bin/node is missing.
+# Check for the specific path, not `command -v node`, to avoid false positives
+# from Termux's node leaking through the proot mount.
+if [ ! -x /usr/bin/node ]; then
+    echo "==> Installing Node.js (NodeSource 22.x)..."
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash - > /dev/null 2>&1
     apt-get install -y -qq nodejs 2>&1 | tail -3
 fi
 
-echo "==> Node.js $(node --version) installed"
+if [ ! -x /usr/bin/node ]; then
+    echo "ERROR: /usr/bin/node not installed"
+    exit 1
+fi
+
+NODE_BIN=/usr/bin/node
+NPM_BIN=/usr/bin/npm
+echo "==> Node.js $("$NODE_BIN" --version) at $NODE_BIN"
+echo "==> Platform: $("$NODE_BIN" -e 'console.log(process.platform, process.arch)')"
 
 # Install Copilot CLI
 # Use --include=optional to ensure the platform-specific binary package
 # (e.g. @github/copilot-linux-arm64) is installed. Some npm configs disable
 # optional deps, which leaves the CLI without its native binary.
 echo "==> Installing @github/copilot..."
-npm install -g --include=optional @github/copilot
+"$NPM_BIN" install -g --include=optional @github/copilot
 
 # Verify the platform package was actually installed. If not, install it
 # explicitly. Map uname -m to the package suffix used by @github/copilot.
@@ -210,10 +226,10 @@ case "$ARCH" in
     *) PLATFORM_PKG="" ;;
 esac
 
-NPM_ROOT="$(npm root -g)"
+NPM_ROOT="$("$NPM_BIN" root -g)"
 if [ -n "$PLATFORM_PKG" ] && [ ! -d "$NPM_ROOT/$PLATFORM_PKG" ]; then
     echo "==> Platform package $PLATFORM_PKG missing, installing explicitly..."
-    npm install -g --force "$PLATFORM_PKG" || {
+    "$NPM_BIN" install -g --force "$PLATFORM_PKG" || {
         echo "ERROR: Could not install platform package $PLATFORM_PKG"
         exit 1
     }
@@ -227,10 +243,14 @@ if [ ! -f "$COPILOT_LOADER" ]; then
     exit 1
 fi
 
+# Wrapper pins both PATH and node to the Debian install. Without this, Termux's
+# leaked node (process.platform === "android") is used and copilot fails with
+# "no platform package found".
 echo "==> Creating internal copilot wrapper at /usr/local/bin/copilot-cli..."
 cat > /usr/local/bin/copilot-cli << WRAPPER
 #!/bin/sh
-exec node "$COPILOT_LOADER" "\$@"
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+exec /usr/bin/node "$COPILOT_LOADER" "\$@"
 WRAPPER
 chmod +x /usr/local/bin/copilot-cli
 
