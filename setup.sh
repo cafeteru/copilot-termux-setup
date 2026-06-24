@@ -149,20 +149,10 @@ install_via_proot() {
     pkg update -y || print_warning "pkg update had issues, continuing..."
     ensure_pkg proot-distro proot-distro
 
-    # Install the distro if not already present.
-    # Most robust check: actually try to login with a no-op command.
-    if proot-distro login "$PROOT_DISTRO" -- /bin/true >/dev/null 2>&1; then
-        print_info "$PROOT_DISTRO already installed (skipping)"
-    else
-        print_info "Installing $PROOT_DISTRO (this may take a few minutes)..."
-        if proot-distro install "$PROOT_DISTRO"; then
-            print_success "$PROOT_DISTRO installed"
-        else
-            print_error "Failed to install $PROOT_DISTRO"
-            print_info "If the container is in a broken state, run: proot-distro remove $PROOT_DISTRO"
-            exit 1
-        fi
-    fi
+    # Try to install the distro. If it already exists, proot-distro exits
+    # non-zero with "container already exists" — that's fine, continue.
+    print_info "Installing $PROOT_DISTRO (skipped automatically if already present)..."
+    proot-distro install "$PROOT_DISTRO" 2>&1 || true
 
     ############################################################################
     # Step 2: Install Node.js and Copilot inside the proot
