@@ -12,10 +12,14 @@
 #      Uses patchelf to run a linux-arm64 Node.js with Termux's glibc.
 #
 # Usage:
-#   bash setup.sh           # Auto-detect best strategy
-#   bash setup.sh proot     # Force proot-distro
-#   bash setup.sh glibc     # Force glibc-native
-#   bash setup.sh self-test # Verify an existing proot install without changing it
+#   bash setup.sh                # Auto-detect best strategy
+#   bash setup.sh proot          # Force proot-distro (default distro: debian)
+#   bash setup.sh proot ubuntu   # Force proot-distro with a specific distro
+#   bash setup.sh glibc          # Force glibc-native
+#   bash setup.sh self-test      # Verify an existing proot install without changing it
+#
+# The proot strategy requires an apt-based distro (debian, ubuntu, kali, ...).
+# You can also set the distro via the PROOT_DISTRO env var.
 #
 # Based on: https://github.com/github/copilot-cli/issues/3333
 
@@ -37,7 +41,21 @@ fi
 
 # Configuration
 NODE_VERSION="${NODE_VERSION:-v22.16.0}"
+# PROOT_DISTRO can come from the env var or from the 2nd positional argument
+# (e.g. `bash setup.sh proot ubuntu`). The inner installer uses apt-get, so
+# only apt-based distros are supported.
 PROOT_DISTRO="${PROOT_DISTRO:-debian}"
+if [ -n "${2:-}" ]; then
+    PROOT_DISTRO="$2"
+fi
+
+APT_BASED_DISTROS="debian ubuntu kali"
+is_apt_based() {
+    case " $APT_BASED_DISTROS " in
+        *" $1 "*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
 # Color codes for output
 RED='\033[0;31m'
@@ -149,6 +167,13 @@ install_via_proot() {
 
     pkg update -y || print_warning "pkg update had issues, continuing..."
     ensure_pkg proot-distro proot-distro
+
+    if ! is_apt_based "$PROOT_DISTRO"; then
+        print_error "Distro '$PROOT_DISTRO' is not supported by this installer."
+        print_info  "Supported distros (apt-based): $APT_BASED_DISTROS"
+        print_info  "If you need another distro, install it manually and adapt the inner script."
+        exit 1
+    fi
 
     # Try to install the distro. If it already exists, proot-distro exits
     # non-zero with "container already exists" — that's fine, continue.

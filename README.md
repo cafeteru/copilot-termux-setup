@@ -31,9 +31,12 @@ Re-running the installer is safe. In `proot` mode, if Debian already exists the 
 ### Force a specific strategy
 
 ```bash
-bash setup.sh proot    # Use proot-distro (recommended for Android 14+)
-bash setup.sh glibc    # Use glibc-native (lighter, older devices)
+bash setup.sh proot           # Use proot-distro with the default distro (debian)
+bash setup.sh proot ubuntu    # Use proot-distro with a specific distro (apt-based only)
+bash setup.sh glibc           # Use glibc-native (lighter, older devices)
 ```
+
+Supported distros for the `proot` strategy: `debian` (default), `ubuntu`, `kali`. They all share the same apt-based installer flow. You can also set the distro via the `PROOT_DISTRO` environment variable.
 
 ### Verify an existing install
 
@@ -48,7 +51,7 @@ Runs a read-only check of the `proot` install (container, Node.js, platform pack
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NODE_VERSION` | `v22.16.0` | Node.js version (glibc strategy only) |
-| `PROOT_DISTRO` | `debian` | Linux distro for proot strategy |
+| `PROOT_DISTRO` | `debian` | Linux distro for proot strategy. Apt-based only: `debian`, `ubuntu`, `kali`. Can also be passed as the 2nd CLI arg (`bash setup.sh proot ubuntu`). |
 
 ## Usage
 
@@ -59,6 +62,24 @@ copilot
 On first launch, use `/login` to authenticate with your GitHub account.
 
 The `copilot` command is a Termux launcher that enters the Debian proot and runs the internal Copilot wrapper there.
+
+If you need to install packages or make manual changes inside the Debian environment used by Copilot, open it directly with:
+
+```bash
+proot-distro login debian
+```
+
+Use that shell for things like `apt install`, `gpg`, `git`, or manual inspection of the Copilot setup inside the proot.
+
+For example, if you need development tools that are not present by default, install them inside that Debian shell:
+
+```bash
+proot-distro login debian
+apt update
+apt install -y openjdk-17-jdk maven
+```
+
+The same applies to any other dependencies you want Copilot to see while running inside the proot environment.
 
 ## After updating Copilot
 
