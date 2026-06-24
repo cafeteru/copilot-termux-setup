@@ -133,11 +133,19 @@ ensure_pkg ripgrep rg
 # Install glibc compatibility packages
 print_info "Adding glibc repository..."
 pkg install -y glibc-repo 2>/dev/null || {
-  # If glibc-repo isn't available as a package, try adding the repo manually
-  print_warning "glibc-repo package not found, trying manual repo setup..."
-  if ! grep -q "glibc" "$PREFIX/etc/apt/sources.list" 2>/dev/null; then
-    echo "deb https://grimler.se/termux-glibc-packages-24 stable main" >> "$PREFIX/etc/apt/sources.list"
+  # If glibc-repo isn't available as a package, add the repo manually
+  print_warning "glibc-repo package not found, adding repository manually..."
+  GLIBC_LIST="$PREFIX/etc/apt/sources.list.d/glibc.list"
+  mkdir -p "$PREFIX/etc/apt/sources.list.d"
+  if [ ! -f "$GLIBC_LIST" ] || ! grep -q "termux-glibc" "$GLIBC_LIST" 2>/dev/null; then
+    cat > "$GLIBC_LIST" << 'REPO'
+# The glibc termux repository, with cloudflare cache
+deb https://packages-cf.termux.dev/apt/termux-glibc/ glibc stable
+REPO
+    print_info "Repository added to $GLIBC_LIST"
     pkg update -y || true
+  else
+    print_info "glibc repository already configured"
   fi
 }
 
