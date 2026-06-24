@@ -9,6 +9,8 @@ All notable changes to this project will be documented in this file.
 - Automatic strategy selection based on Android SDK version.
 - Termux launcher at `$PREFIX/bin/copilot` that enters the proot environment automatically.
 - Internal proot wrapper at `/usr/local/bin/copilot-cli` to avoid recursive launcher resolution.
+- `bash setup.sh self-test` subcommand that verifies a proot install end-to-end without mutating state.
+- README link to this changelog.
 - Repository documentation updates covering installation, updates, and troubleshooting.
 
 ### Changed
@@ -38,7 +40,6 @@ All notable changes to this project will be documented in this file.
 
 ### Possible Improvements
 - Add an explicit `--update` mode that refreshes Copilot and regenerates wrappers without re-running the full install flow.
-- Add a lightweight self-test mode to verify `node`, the platform package, and `copilot --version` before declaring success.
 - Reduce dependence on NodeSource if Debian's packaged Node.js becomes sufficient for the required Copilot version.
 - Add clearer handling for package-source warnings such as the Termux glibc repository signature notice.
 - Consider logging setup output to a file for easier diagnosis on-device.

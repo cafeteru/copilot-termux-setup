@@ -15,6 +15,7 @@
 #   bash setup.sh           # Auto-detect best strategy
 #   bash setup.sh proot     # Force proot-distro
 #   bash setup.sh glibc     # Force glibc-native
+#   bash setup.sh self-test # Verify an existing proot install without changing it
 #
 # Based on: https://github.com/github/copilot-cli/issues/3333
 
@@ -611,6 +612,84 @@ EOF
 }
 
 ################################################################################
+# SELF-TEST
+################################################################################
+
+# Read-only verification of an existing proot install. Useful after upgrades to
+# detect regressions (e.g. @github/copilot changing its package layout) without
+# mutating the environment. Exits non-zero on the first failure with a clear
+# message pointing at the broken stage.
+run_self_test() {
+    print_header "GitHub Copilot CLI self-test (proot)"
+
+    FAILED=0
+
+    # Run a command directly (no eval). Args after $1 are the command + args.
+    # Filters out harmless proot warnings about /proc/self/fd that appear when
+    # proot-distro's stdio is captured into a variable.
+    run_cmd() {
+        local label="$1"
+        shift
+        local out
+        if out="$("$@" 2>&1)"; then
+            out="$(printf '%s\n' "$out" | grep -v "proot warning: can't sanitize binding" || true)"
+            print_success "$label"
+            [ -n "$out" ] && echo "    $out"
+            return 0
+        else
+            out="$(printf '%s\n' "$out" | grep -v "proot warning: can't sanitize binding" || true)"
+            print_error "$label"
+            [ -n "$out" ] && echo "    $out"
+            FAILED=$((FAILED + 1))
+            return 1
+        fi
+    }
+
+    # Run a shell command inside the proot. $2 is passed as the single argument
+    # to `sh -c`, so quoting follows normal sh rules (no eval).
+    proot_run() {
+        local label="$1"
+        local cmd="$2"
+        run_cmd "$label" proot-distro login "$PROOT_DISTRO" -- /bin/sh -c "$cmd"
+    }
+
+    run_cmd   "proot-distro available"          command -v proot-distro
+    run_cmd   "Termux launcher present"         test -x "$PREFIX/bin/copilot"
+    run_cmd   "$PROOT_DISTRO container usable"  proot-distro login "$PROOT_DISTRO" -- /bin/true
+
+    proot_run "Debian /usr/bin/node present"      "test -x /usr/bin/node"
+    proot_run "Node reports linux platform" \
+        '/usr/bin/node -e "if (process.platform !== \"linux\") { console.error(\"got \" + process.platform); process.exit(1) }"'
+    proot_run "Internal copilot wrapper present"  "test -x /usr/local/bin/copilot-cli"
+    proot_run "@github/copilot installed" \
+        'test -f "$(/usr/bin/npm root -g)/@github/copilot/npm-loader.js"'
+
+    # Platform package check (matches what install_via_proot installs)
+    ARCH="$(uname -m)"
+    case "$ARCH" in
+        x86_64|amd64)   PLATFORM_PKG="@github/copilot-linux-x64" ;;
+        aarch64|arm64)  PLATFORM_PKG="@github/copilot-linux-arm64" ;;
+        *) PLATFORM_PKG="" ;;
+    esac
+    if [ -n "$PLATFORM_PKG" ]; then
+        proot_run "Platform package $PLATFORM_PKG installed" \
+            "test -d \"\$(/usr/bin/npm root -g)/$PLATFORM_PKG\""
+    fi
+
+    proot_run "copilot --version runs"  "/usr/local/bin/copilot-cli --version"
+
+    echo ""
+    if [ "$FAILED" -eq 0 ]; then
+        print_success "Self-test passed"
+        exit 0
+    else
+        print_error "Self-test failed ($FAILED check(s))"
+        print_info "Re-run the installer to repair: bash setup.sh proot"
+        exit 1
+    fi
+}
+
+################################################################################
 # RUN SELECTED STRATEGY
 ################################################################################
 
@@ -621,9 +700,12 @@ case "$STRATEGY" in
     glibc)
         install_via_glibc
         ;;
+    self-test)
+        run_self_test
+        ;;
     *)
         echo "Unknown strategy: $STRATEGY" >&2
-        echo "Usage: bash setup.sh [proot|glibc|auto]" >&2
+        echo "Usage: bash setup.sh [proot|glibc|auto|self-test]" >&2
         exit 1
         ;;
 esac

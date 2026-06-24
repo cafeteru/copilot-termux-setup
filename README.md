@@ -35,6 +35,14 @@ bash setup.sh proot    # Use proot-distro (recommended for Android 14+)
 bash setup.sh glibc    # Use glibc-native (lighter, older devices)
 ```
 
+### Verify an existing install
+
+```bash
+bash setup.sh self-test
+```
+
+Runs a read-only check of the `proot` install (container, Node.js, platform package, wrapper, launcher, `copilot --version`). Useful after upgrading `@github/copilot` or Termux to catch regressions without reinstalling.
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -78,3 +86,7 @@ npm update -g @github/copilot && bash setup.sh glibc
 ## License
 
 MIT
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for the history of changes and known limitations.
