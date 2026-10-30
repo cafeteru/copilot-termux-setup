@@ -142,6 +142,7 @@ install_native() {
     pkg install -y termux-keyring 2>/dev/null || true
 
     ensure_pkg ca-certificates
+    mkdir -p "$PREFIX/etc/tls/certs"
     ensure_pkg nodejs node
     ensure_pkg ripgrep rg
 
